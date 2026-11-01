@@ -5,12 +5,14 @@ import requests
 
 # -------------------------------------------------------------------------------------------
 # GLaDOS 自动签到增强脚本
-# 支持多域名自动重试、Token 适配、Cookie 失效安全捕获与通知
+# 支持多域名自动重试、Token 适配、自定义 User-Agent、Cookie 失效安全捕获与通知
 # -------------------------------------------------------------------------------------------
 
 DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
-TOKENS = ["glados.one", "glados.cloud", "glados.rocks"]
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+# 将当前主流的 glados.cloud 置于首位尝试
+TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -42,7 +44,8 @@ def checkin_account(cookie: str, sckey: str = ""):
             'cookie': cookie,
             'referer': f'https://{domain}/console/checkin',
             'origin': f'https://{domain}',
-            'user-agent': USER_AGENT
+            'user-agent': USER_AGENT,
+            'accept': 'application/json, text/plain, */*'
         }
         try:
             res = requests.get(url_status, headers=headers, timeout=15)
@@ -59,7 +62,7 @@ def checkin_account(cookie: str, sckey: str = ""):
             continue
 
     if not status_data:
-        fail_msg = "❌ GLaDOS Cookie 已失效（返回没有权限/需要重新登录），请重新登录网页端提取最新 Cookie 并更新 GitHub Secrets (GLADOS_COOKIE)！"
+        fail_msg = "❌ GLaDOS Cookie 已失效（返回没有权限/需要重新登录）。若近期在网页重新登录过，请将浏览器最新 Cookie 同步更新至 GitHub Secrets (GLADOS_COOKIE)！"
         print(fail_msg)
         return fail_msg, False
 
@@ -73,7 +76,8 @@ def checkin_account(cookie: str, sckey: str = ""):
         'referer': f'https://{active_domain}/console/checkin',
         'origin': f'https://{active_domain}',
         'user-agent': USER_AGENT,
-        'content-type': 'application/json;charset=UTF-8'
+        'content-type': 'application/json;charset=UTF-8',
+        'accept': 'application/json, text/plain, */*'
     }
 
     checkin_result = None

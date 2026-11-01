@@ -8,8 +8,9 @@ import requests
 # -------------------------------------------------------------------------------------------
 
 DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
-TOKENS = ["glados.one", "glados.cloud", "glados.rocks"]
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -40,7 +41,8 @@ def checkin_account(cookie: str, sckey: str = ""):
             'cookie': cookie,
             'referer': f'https://{domain}/console/checkin',
             'origin': f'https://{domain}',
-            'user-agent': USER_AGENT
+            'user-agent': USER_AGENT,
+            'accept': 'application/json, text/plain, */*'
         }
         try:
             res = requests.get(url_status, headers=headers, timeout=15)
@@ -67,7 +69,8 @@ def checkin_account(cookie: str, sckey: str = ""):
         'referer': f'https://{active_domain}/console/checkin',
         'origin': f'https://{active_domain}',
         'user-agent': USER_AGENT,
-        'content-type': 'application/json;charset=UTF-8'
+        'content-type': 'application/json;charset=UTF-8',
+        'accept': 'application/json, text/plain, */*'
     }
 
     checkin_result = None
