@@ -5,11 +5,10 @@ import requests
 
 # -------------------------------------------------------------------------------------------
 # GLaDOS 自动签到增强脚本
-# 支持多域名自动重试、Token 适配、自定义 User-Agent、Cookie 失效安全捕获与通知
+# 支持多域名自动重试、Token 适配、真实 code 状态码强校验、防静默假成功与失败告警
 # -------------------------------------------------------------------------------------------
 
-DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
-# 将当前主流的 glados.cloud 置于首位尝试
+DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
 TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
@@ -34,7 +33,7 @@ def checkin_account(cookie: str, sckey: str = ""):
     if not cookie:
         return "", False
 
-    # 1. 尝试查询账号状态
+    # 1. 查询账号状态（验证 Cookie 基本有效性）
     status_data = None
     active_domain = DOMAINS[0]
 
@@ -58,49 +57,69 @@ def checkin_account(cookie: str, sckey: str = ""):
                 elif res_json.get('code') in (-1, -2):
                     print(f"[{domain}] 状态查询未授权: {res_json.get('message', '没有权限/请重新登录')} (code: {res_json.get('code')})")
         except Exception as e:
-            print(f"[{domain}] 连接异常: {e}")
+            print(f"[{domain}] 状态连接异常: {e}")
             continue
 
     if not status_data:
-        fail_msg = "❌ GLaDOS Cookie 已失效（返回没有权限/需要重新登录）。若近期在网页重新登录过，请将浏览器最新 Cookie 同步更新至 GitHub Secrets (GLADOS_COOKIE)！"
+        fail_msg = "❌ GLaDOS Cookie 已失效（返回没有权限/需要重新登录）。请重新在浏览器登录并更新 GitHub Secrets (GLADOS_COOKIE)！"
         print(fail_msg)
         return fail_msg, False
 
     email = status_data.get('email', '未知用户')
     left_days = str(status_data.get('leftDays', '0')).split('.')[0]
 
-    # 2. 执行签到
-    checkin_url = f"https://{active_domain}/api/user/checkin"
-    checkin_headers = {
-        'cookie': cookie,
-        'referer': f'https://{active_domain}/console/checkin',
-        'origin': f'https://{active_domain}',
-        'user-agent': USER_AGENT,
-        'content-type': 'application/json;charset=UTF-8',
-        'accept': 'application/json, text/plain, */*'
-    }
-
+    # 2. 执行签到（严格校验返回值中的 code，严禁将拦截或错误消息误判为成功）
     checkin_result = None
-    for token in TOKENS:
-        try:
-            payload = {'token': token}
-            res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
-            if res.status_code == 200:
-                res_json = res.json()
-                if 'message' in res_json:
-                    checkin_result = res_json
-                    break
-        except Exception as e:
-            print(f"签到请求异常 (token={token}): {e}")
+    is_checkin_ok = False
 
-    if checkin_result and 'message' in checkin_result:
-        mess = checkin_result['message']
-        summary = f"账号: {email} | 签到结果: {mess} | 剩余天数: {left_days} 天"
+    for domain in DOMAINS:
+        checkin_url = f"https://{domain}/api/user/checkin"
+        checkin_headers = {
+            'cookie': cookie,
+            'referer': f'https://{domain}/console/checkin',
+            'origin': f'https://{domain}',
+            'user-agent': USER_AGENT,
+            'content-type': 'application/json;charset=UTF-8',
+            'accept': 'application/json, text/plain, */*'
+        }
+
+        for token in TOKENS:
+            try:
+                payload = {'token': token}
+                res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
+                if res.status_code == 200:
+                    res_json = res.json()
+                    checkin_result = res_json
+                    code = res_json.get('code')
+                    mess = str(res_json.get('message', ''))
+                    mess_lower = mess.lower()
+
+                    # 判定规则 1：code == 0 明确签到成功
+                    if code == 0:
+                        is_checkin_ok = True
+                        break
+                    # 判定规则 2：code == 1 且包含重复签到文本（当日已签，属于合规成功）
+                    elif code == 1 and any(k in mess_lower for k in ['repeat', 'already', 'try later', 'try tomorrow']):
+                        is_checkin_ok = True
+                        break
+                    else:
+                        print(f"[{domain}][token={token}] 签到被拦截或失败: code={code}, message={mess}")
+            except Exception as e:
+                print(f"[{domain}][token={token}] 签到请求异常: {e}")
+
+        if is_checkin_ok:
+            break
+
+    mess = checkin_result.get('message', str(checkin_result)) if checkin_result else '无响应或网络异常'
+    code = checkin_result.get('code') if checkin_result else None
+
+    if is_checkin_ok:
+        summary = f"账号: {email} | 签到成功: {mess} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"✅ {summary}")
         return summary, True
     else:
-        summary = f"⚠️ 账号: {email} | 签到接口响应异常: {checkin_result} | 剩余天数: {left_days} 天"
-        print(summary)
+        summary = f"账号: {email} | 签到失败: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        print(f"❌ {summary}")
         return summary, False
 
 if __name__ == '__main__':
@@ -125,11 +144,11 @@ if __name__ == '__main__':
 
     send_content = "<br>".join(results)
     if sckey:
-        title = "GLaDOS 签到完成" if not has_failure else "GLaDOS 签到失败-Cookie失效告警"
+        title = "GLaDOS 签到完成" if not has_failure else "GLaDOS 签到失败告警"
         send_pushplus(sckey, title, send_content)
 
     if has_failure:
-        print("\n[注意] 检测到签到失败或 Cookie 失效，请及时更新 Cookie！")
+        print("\n[注意] 检测到签到失败或风控拦截，请及时检查并更新 Cookie / User-Agent！")
         sys.exit(1)
     else:
         print("\n🎉 所有账号签到执行完毕！")

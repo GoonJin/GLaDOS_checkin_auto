@@ -7,7 +7,7 @@ import requests
 # GLaDOS 自动签到 (青龙面板版本)
 # -------------------------------------------------------------------------------------------
 
-DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
+DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
 TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
@@ -63,37 +63,53 @@ def checkin_account(cookie: str, sckey: str = ""):
     email = status_data.get('email', '未知用户')
     left_days = str(status_data.get('leftDays', '0')).split('.')[0]
 
-    checkin_url = f"https://{active_domain}/api/user/checkin"
-    checkin_headers = {
-        'cookie': cookie,
-        'referer': f'https://{active_domain}/console/checkin',
-        'origin': f'https://{active_domain}',
-        'user-agent': USER_AGENT,
-        'content-type': 'application/json;charset=UTF-8',
-        'accept': 'application/json, text/plain, */*'
-    }
-
     checkin_result = None
-    for token in TOKENS:
-        try:
-            payload = {'token': token}
-            res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
-            if res.status_code == 200:
-                res_json = res.json()
-                if 'message' in res_json:
-                    checkin_result = res_json
-                    break
-        except Exception:
-            pass
+    is_checkin_ok = False
 
-    if checkin_result and 'message' in checkin_result:
-        mess = checkin_result['message']
-        summary = f"账号: {email} | 签到结果: {mess} | 剩余天数: {left_days} 天"
+    for domain in DOMAINS:
+        checkin_url = f"https://{domain}/api/user/checkin"
+        checkin_headers = {
+            'cookie': cookie,
+            'referer': f'https://{domain}/console/checkin',
+            'origin': f'https://{domain}',
+            'user-agent': USER_AGENT,
+            'content-type': 'application/json;charset=UTF-8',
+            'accept': 'application/json, text/plain, */*'
+        }
+
+        for token in TOKENS:
+            try:
+                payload = {'token': token}
+                res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
+                if res.status_code == 200:
+                    res_json = res.json()
+                    checkin_result = res_json
+                    code = res_json.get('code')
+                    mess = str(res_json.get('message', ''))
+                    mess_lower = mess.lower()
+
+                    if code == 0:
+                        is_checkin_ok = True
+                        break
+                    elif code == 1 and any(k in mess_lower for k in ['repeat', 'already', 'try later', 'try tomorrow']):
+                        is_checkin_ok = True
+                        break
+            except Exception:
+                pass
+
+        if is_checkin_ok:
+            break
+
+    mess = checkin_result.get('message', str(checkin_result)) if checkin_result else '无响应或网络异常'
+    code = checkin_result.get('code') if checkin_result else None
+
+    if is_checkin_ok:
+        summary = f"账号: {email} | 签到成功: {mess} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"✅ {summary}")
         return summary, True
     else:
-        summary = f"⚠️ 账号: {email} | 签到异常: {checkin_result} | 剩余天数: {left_days} 天"
-        print(summary)
+        summary = f"账号: {email} | 签到失败: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        print(f"❌ {summary}")
         return summary, False
 
 def start():
@@ -118,7 +134,7 @@ def start():
 
     send_content = "<br>".join(results)
     if sckey:
-        title = "GLaDOS 签到完成" if not has_failure else "GLaDOS 签到异常"
+        title = "GLaDOS 签到完成" if not has_failure else "GLaDOS 签到异常告警"
         send_pushplus(sckey, title, send_content)
 
 def main_handler(event, context):
