@@ -11,7 +11,8 @@ import requests
 DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
 TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
+raw_ua = os.environ.get("GLADOS_USER_AGENT", "").strip()
+USER_AGENT = raw_ua.strip("'\"` ").strip() or DEFAULT_UA
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -30,6 +31,9 @@ def send_pushplus(sckey: str, title: str, content: str):
 
 def checkin_account(cookie: str, sckey: str = ""):
     cookie = cookie.strip()
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie[7:].strip()
+    cookie = cookie.strip("'\"` ").strip()
     if not cookie:
         return "", False
 
@@ -56,6 +60,8 @@ def checkin_account(cookie: str, sckey: str = ""):
                     break
                 elif res_json.get('code') in (-1, -2):
                     print(f"[{domain}] 状态查询未授权: {res_json.get('message', '没有权限/请重新登录')} (code: {res_json.get('code')})")
+            else:
+                print(f"[{domain}] HTTP 异常状态码: {res.status_code}")
         except Exception as e:
             print(f"[{domain}] 状态连接异常: {e}")
             continue
@@ -122,6 +128,28 @@ def checkin_account(cookie: str, sckey: str = ""):
         print(f"❌ {summary}")
         return summary, False
 
+def write_github_summary(results: list, has_failure: bool):
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    try:
+        title = "### ❌ GLaDOS 自动签到失败" if has_failure else "### 🎉 GLaDOS 自动签到成功"
+        lines = [title, "", "| 账号执行详情 |", "| :--- |"]
+        for r in results:
+            lines.append(f"| {r} |")
+        lines.append("")
+        if has_failure:
+            lines.extend([
+                "> [!WARNING]",
+                "> **排查指引**：",
+                "> 1. **主要原因**：若提示「Cookie 已失效/没有权限」，说明 GitHub Secrets 中的 `GLADOS_COOKIE` 依然是旧凭据。请在浏览器登录 GLaDOS 后按 F12 刷新，复制完整 `cookie:` 请求头更新到 GitHub Secrets `GLADOS_COOKIE`。",
+                "> 2. **格式提醒**：若配置了 `GLADOS_USER_AGENT`，不要带从开发者控制台复制出来的首尾单引号 `'`（最新脚本已自动容错剥除）。",
+            ])
+        with open(summary_file, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        print(f"写入 GitHub Step Summary 失败: {e}")
+
 if __name__ == '__main__':
     sckey = os.environ.get("PUSHPLUS_TOKEN", "").strip()
     raw_cookie = os.environ.get("GLADOS_COOKIE", "").strip()
@@ -146,6 +174,8 @@ if __name__ == '__main__':
     if sckey:
         title = "GLaDOS 签到完成" if not has_failure else "GLaDOS 签到失败告警"
         send_pushplus(sckey, title, send_content)
+
+    write_github_summary(results, has_failure)
 
     if has_failure:
         print("\n[注意] 检测到签到失败或风控拦截，请及时检查并更新 Cookie / User-Agent！")

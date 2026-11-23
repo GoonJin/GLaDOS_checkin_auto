@@ -10,7 +10,8 @@ import requests
 DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
 TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-USER_AGENT = os.environ.get("GLADOS_USER_AGENT", "").strip() or DEFAULT_UA
+raw_ua = os.environ.get("GLADOS_USER_AGENT", "").strip()
+USER_AGENT = raw_ua.strip("'\"` ").strip() or DEFAULT_UA
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -29,6 +30,9 @@ def send_pushplus(sckey: str, title: str, content: str):
 
 def checkin_account(cookie: str, sckey: str = ""):
     cookie = cookie.strip()
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie[7:].strip()
+    cookie = cookie.strip("'\"` ").strip()
     if not cookie:
         return "", False
 
