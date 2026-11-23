@@ -151,16 +151,23 @@ def checkin_account(cookie: str, sckey: str = ""):
                     mess = str(res_json.get('message', ''))
                     mess_lower = mess.lower()
 
-                    # 判定规则 1：code == 0 明确签到成功
+                    is_repeat = (
+                        res_json.get('repeated') is True or
+                        (code == 1 and any(k in mess_lower for k in [
+                            'repeat', 'already', 'tomorrow', 'observation logged', 'later'
+                        ]))
+                    )
+
+                    # 判定规则 1：code == 0 明确签到成功（获得当日新积分）
                     if code == 0:
                         is_checkin_ok = True
                         break
-                    # 判定规则 2：code == 1 且包含重复签到文本（当日已签，属于合规成功）
-                    elif code == 1 and any(k in mess_lower for k in ['repeat', 'already', 'try later', 'try tomorrow']):
+                    # 判定规则 2：repeated == True 或 code == 1 重复签到（当日已签，合规放行）
+                    elif is_repeat:
                         is_checkin_ok = True
                         break
                     else:
-                        print(f"[{domain}][token={token}] 签到返回: code={code}, message={mess}")
+                        print(f"[{domain}][token={token}] 签到返回: code={code}, repeated={res_json.get('repeated')}, message={mess}")
             except Exception as e:
                 print(f"[{domain}][token={token}] 签到请求异常: {e}")
 
@@ -171,7 +178,8 @@ def checkin_account(cookie: str, sckey: str = ""):
     code = checkin_result.get('code') if checkin_result else None
 
     if is_checkin_ok:
-        summary = f"账号: {email} | 签到成功: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        status_text = "签到成功" if code == 0 else "今日已签到 (重复合规)"
+        summary = f"账号: {email} | {status_text}: {mess} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"✅ {summary}")
         return summary, True
     else:

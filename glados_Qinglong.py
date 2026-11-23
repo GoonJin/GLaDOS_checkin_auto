@@ -130,10 +130,17 @@ def checkin_account(cookie: str, sckey: str = ""):
                     mess = str(res_json.get('message', ''))
                     mess_lower = mess.lower()
 
+                    is_repeat = (
+                        res_json.get('repeated') is True or
+                        (code == 1 and any(k in mess_lower for k in [
+                            'repeat', 'already', 'tomorrow', 'observation logged', 'later'
+                        ]))
+                    )
+
                     if code == 0:
                         is_checkin_ok = True
                         break
-                    elif code == 1 and any(k in mess_lower for k in ['repeat', 'already', 'try later', 'try tomorrow']):
+                    elif is_repeat:
                         is_checkin_ok = True
                         break
             except Exception:
@@ -146,7 +153,8 @@ def checkin_account(cookie: str, sckey: str = ""):
     code = checkin_result.get('code') if checkin_result else None
 
     if is_checkin_ok:
-        summary = f"账号: {email} | 签到成功: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        status_text = "签到成功" if code == 0 else "今日已签到 (重复合规)"
+        summary = f"账号: {email} | {status_text}: {mess} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"✅ {summary}")
         return summary, True
     else:
