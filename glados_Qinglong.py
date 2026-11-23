@@ -7,11 +7,47 @@ import requests
 # GLaDOS 自动签到 (青龙面板版本)
 # -------------------------------------------------------------------------------------------
 
-DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
-TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
+DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
+TOKENS = ["glados.rocks", "glados.cloud", "glados.one"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 raw_ua = os.environ.get("GLADOS_USER_AGENT", "").strip()
 USER_AGENT = raw_ua.strip("'\"` ").strip() or DEFAULT_UA
+
+def normalize_cookie(raw: str) -> str:
+    if not raw:
+        return ""
+    raw = raw.strip().strip("'\"` ").strip()
+    lines = raw.splitlines()
+    cookie_parts = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        lower_line = line.lower()
+        if lower_line.startswith("cookie:"):
+            content = line[7:].strip()
+            if content:
+                cookie_parts.append(content.rstrip(";"))
+            continue
+        if any(lower_line.startswith(h) for h in [
+            ":authority", ":method", ":path", ":scheme", "accept", "user-agent",
+            "sec-", "priority", "referer", "origin", "content-", "host"
+        ]):
+            continue
+        if "=" in line:
+            cookie_parts.append(line.rstrip(";"))
+
+    if cookie_parts:
+        final_tokens = []
+        for part in cookie_parts:
+            sub_tokens = [t.strip().rstrip(";") for t in part.split(";") if t.strip()]
+            final_tokens.extend(sub_tokens)
+        return "; ".join(final_tokens)
+
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+    return raw.strip().strip("'\"` ").strip()
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -29,25 +65,30 @@ def send_pushplus(sckey: str, title: str, content: str):
         print(f"Pushplus 推送失败: {e}")
 
 def checkin_account(cookie: str, sckey: str = ""):
-    cookie = cookie.strip()
-    if cookie.lower().startswith("cookie:"):
-        cookie = cookie[7:].strip()
-    cookie = cookie.strip("'\"` ").strip()
+    cookie = normalize_cookie(cookie)
     if not cookie:
         return "", False
+
+    base_headers = {
+        'cookie': cookie,
+        'user-agent': USER_AGENT,
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin'
+    }
 
     status_data = None
     active_domain = DOMAINS[0]
 
     for domain in DOMAINS:
         url_status = f"https://{domain}/api/user/status"
-        headers = {
-            'cookie': cookie,
-            'referer': f'https://{domain}/console/checkin',
-            'origin': f'https://{domain}',
-            'user-agent': USER_AGENT,
-            'accept': 'application/json, text/plain, */*'
-        }
+        headers = dict(base_headers)
+        headers['referer'] = f'https://{domain}/console/checkin'
+        headers['origin'] = f'https://{domain}'
         try:
             res = requests.get(url_status, headers=headers, timeout=15)
             if res.status_code == 200:
@@ -60,9 +101,7 @@ def checkin_account(cookie: str, sckey: str = ""):
             continue
 
     if not status_data:
-        fail_msg = "❌ GLaDOS Cookie 已失效，请在网页端重新登录并更新环境变量 GLADOS_COOKIE！"
-        print(fail_msg)
-        return fail_msg, False
+        return "❌ GLaDOS Cookie 已失效", False
 
     email = status_data.get('email', '未知用户')
     left_days = str(status_data.get('leftDays', '0')).split('.')[0]
@@ -70,18 +109,17 @@ def checkin_account(cookie: str, sckey: str = ""):
     checkin_result = None
     is_checkin_ok = False
 
-    for domain in DOMAINS:
-        checkin_url = f"https://{domain}/api/user/checkin"
-        checkin_headers = {
-            'cookie': cookie,
-            'referer': f'https://{domain}/console/checkin',
-            'origin': f'https://{domain}',
-            'user-agent': USER_AGENT,
-            'content-type': 'application/json;charset=UTF-8',
-            'accept': 'application/json, text/plain, */*'
-        }
+    domains_to_try = [active_domain] + [d for d in DOMAINS if d != active_domain]
+    tokens_to_try = [active_domain] + [t for t in TOKENS if t != active_domain]
 
-        for token in TOKENS:
+    for domain in domains_to_try:
+        checkin_url = f"https://{domain}/api/user/checkin"
+        checkin_headers = dict(base_headers)
+        checkin_headers['referer'] = f'https://{domain}/console/checkin'
+        checkin_headers['origin'] = f'https://{domain}'
+        checkin_headers['content-type'] = 'application/json;charset=UTF-8'
+
+        for token in tokens_to_try:
             try:
                 payload = {'token': token}
                 res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
@@ -117,11 +155,11 @@ def checkin_account(cookie: str, sckey: str = ""):
         return summary, False
 
 def start():
-    sckey = os.environ.get("PUSHPLUS_TOKEN", "").strip()
-    raw_cookie = os.environ.get("GLADOS_COOKIE", "").strip()
+    raw_cookie = os.environ.get("GLADOS_COOKIE", "")
+    sckey = os.environ.get("PUSHPLUS_TOKEN", "")
 
     if not raw_cookie:
-        print("未获取到 GLADOS_COOKIE 环境变量")
+        print("未获取到 GLADOS_COOKIE")
         return
 
     cookies = raw_cookie.split("&")

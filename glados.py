@@ -5,14 +5,59 @@ import requests
 
 # -------------------------------------------------------------------------------------------
 # GLaDOS 自动签到增强脚本
-# 支持多域名自动重试、Token 适配、真实 code 状态码强校验、防静默假成功与失败告警
+# 支持多域名自动重试、Token 适配、Cookie 智能清洗（多行/前缀/引号容错）、真实 code 强校验
 # -------------------------------------------------------------------------------------------
 
-DOMAINS = ["glados.cloud", "glados.rocks", "glados.network"]
-TOKENS = ["glados.cloud", "glados.one", "glados.rocks"]
+DOMAINS = ["glados.rocks", "glados.cloud", "glados.network"]
+TOKENS = ["glados.rocks", "glados.cloud", "glados.one"]
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 raw_ua = os.environ.get("GLADOS_USER_AGENT", "").strip()
 USER_AGENT = raw_ua.strip("'\"` ").strip() or DEFAULT_UA
+
+def normalize_cookie(raw: str) -> str:
+    """
+    智能清洗并规范化 Cookie 字符串：
+    1. 自动处理从 Chrome DevTools Request Headers 中直接划选复制导致的多行换行符（换行符会导致 Python http 报错）
+    2. 自动剔除可能误带的 'Cookie:' / 'cookie:' 标签前缀
+    3. 自动剔除可能误全选带入的 ':authority:', 'Accept:' 等其他请求头
+    4. 自动剥除首尾单引号、双引号、多余空格
+    5. 将分散的 cookie 键值对以标准 RFC 6265 格式（分号+空格）拼接为单行合规标头
+    """
+    if not raw:
+        return ""
+    raw = raw.strip().strip("'\"` ").strip()
+    lines = raw.splitlines()
+    cookie_parts = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        lower_line = line.lower()
+        if lower_line.startswith("cookie:"):
+            content = line[7:].strip()
+            if content:
+                cookie_parts.append(content.rstrip(";"))
+            continue
+        # 过滤其他误复制的请求头
+        if any(lower_line.startswith(h) for h in [
+            ":authority", ":method", ":path", ":scheme", "accept", "user-agent",
+            "sec-", "priority", "referer", "origin", "content-", "host"
+        ]):
+            continue
+        if "=" in line:
+            cookie_parts.append(line.rstrip(";"))
+
+    if cookie_parts:
+        final_tokens = []
+        for part in cookie_parts:
+            sub_tokens = [t.strip().rstrip(";") for t in part.split(";") if t.strip()]
+            final_tokens.extend(sub_tokens)
+        return "; ".join(final_tokens)
+
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+    return raw.strip().strip("'\"` ").strip()
 
 def send_pushplus(sckey: str, title: str, content: str):
     if not sckey:
@@ -30,12 +75,22 @@ def send_pushplus(sckey: str, title: str, content: str):
         print(f"Pushplus 推送失败: {e}")
 
 def checkin_account(cookie: str, sckey: str = ""):
-    cookie = cookie.strip()
-    if cookie.lower().startswith("cookie:"):
-        cookie = cookie[7:].strip()
-    cookie = cookie.strip("'\"` ").strip()
+    cookie = normalize_cookie(cookie)
     if not cookie:
-        return "", False
+        print("❌ Cookie 解析后为空或格式无效，请检查 GitHub Secrets 中的 GLADOS_COOKIE 配置！")
+        return "❌ Cookie 为空或格式无效", False
+
+    base_headers = {
+        'cookie': cookie,
+        'user-agent': USER_AGENT,
+        'accept': 'application/json, text/plain, */*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin'
+    }
 
     # 1. 查询账号状态（验证 Cookie 基本有效性）
     status_data = None
@@ -43,13 +98,9 @@ def checkin_account(cookie: str, sckey: str = ""):
 
     for domain in DOMAINS:
         url_status = f"https://{domain}/api/user/status"
-        headers = {
-            'cookie': cookie,
-            'referer': f'https://{domain}/console/checkin',
-            'origin': f'https://{domain}',
-            'user-agent': USER_AGENT,
-            'accept': 'application/json, text/plain, */*'
-        }
+        headers = dict(base_headers)
+        headers['referer'] = f'https://{domain}/console/checkin'
+        headers['origin'] = f'https://{domain}'
         try:
             res = requests.get(url_status, headers=headers, timeout=15)
             if res.status_code == 200:
@@ -57,6 +108,7 @@ def checkin_account(cookie: str, sckey: str = ""):
                 if res_json.get('code') == 0 and 'data' in res_json:
                     status_data = res_json['data']
                     active_domain = domain
+                    print(f"[{domain}] 状态校验成功，已识别登录会话")
                     break
                 elif res_json.get('code') in (-1, -2):
                     print(f"[{domain}] 状态查询未授权: {res_json.get('message', '没有权限/请重新登录')} (code: {res_json.get('code')})")
@@ -78,18 +130,17 @@ def checkin_account(cookie: str, sckey: str = ""):
     checkin_result = None
     is_checkin_ok = False
 
-    for domain in DOMAINS:
-        checkin_url = f"https://{domain}/api/user/checkin"
-        checkin_headers = {
-            'cookie': cookie,
-            'referer': f'https://{domain}/console/checkin',
-            'origin': f'https://{domain}',
-            'user-agent': USER_AGENT,
-            'content-type': 'application/json;charset=UTF-8',
-            'accept': 'application/json, text/plain, */*'
-        }
+    domains_to_try = [active_domain] + [d for d in DOMAINS if d != active_domain]
+    tokens_to_try = [active_domain] + [t for t in TOKENS if t != active_domain]
 
-        for token in TOKENS:
+    for domain in domains_to_try:
+        checkin_url = f"https://{domain}/api/user/checkin"
+        checkin_headers = dict(base_headers)
+        checkin_headers['referer'] = f'https://{domain}/console/checkin'
+        checkin_headers['origin'] = f'https://{domain}'
+        checkin_headers['content-type'] = 'application/json;charset=UTF-8'
+
+        for token in tokens_to_try:
             try:
                 payload = {'token': token}
                 res = requests.post(checkin_url, headers=checkin_headers, data=json.dumps(payload), timeout=15)
@@ -109,7 +160,7 @@ def checkin_account(cookie: str, sckey: str = ""):
                         is_checkin_ok = True
                         break
                     else:
-                        print(f"[{domain}][token={token}] 签到被拦截或失败: code={code}, message={mess}")
+                        print(f"[{domain}][token={token}] 签到返回: code={code}, message={mess}")
             except Exception as e:
                 print(f"[{domain}][token={token}] 签到请求异常: {e}")
 
@@ -142,7 +193,7 @@ def write_github_summary(results: list, has_failure: bool):
             lines.extend([
                 "> [!WARNING]",
                 "> **排查指引**：",
-                "> 1. **主要原因**：若提示「Cookie 已失效/没有权限」，说明 GitHub Secrets 中的 `GLADOS_COOKIE` 依然是旧凭据。请在浏览器登录 GLaDOS 后按 F12 刷新，复制完整 `cookie:` 请求头更新到 GitHub Secrets `GLADOS_COOKIE`。",
+                "> 1. **主要原因**：若提示「Cookie 已失效/没有权限」，说明 GitHub Secrets 中的 `GLADOS_COOKIE` 依然是旧凭据或提取格式不完整。请在浏览器登录 GLaDOS 后按 F12 刷新，复制完整 `cookie:` 请求头更新到 GitHub Secrets `GLADOS_COOKIE`。",
                 "> 2. **格式提醒**：若配置了 `GLADOS_USER_AGENT`，不要带从开发者控制台复制出来的首尾单引号 `'`（最新脚本已自动容错剥除）。",
             ])
         with open(summary_file, "a", encoding="utf-8") as f:
