@@ -183,7 +183,11 @@ def checkin_account(cookie: str, sckey: str = ""):
         print(f"✅ {summary}")
         return summary, True
     else:
-        summary = f"账号: {email} | 签到失败: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        if code == 5 or 'cloudflare' in mess.lower():
+            fail_desc = "GLaDOS 启用了 Cloudflare 人机验证 (Turnstile)，云端脚本被拦截，需网页端点击签到"
+        else:
+            fail_desc = mess
+        summary = f"账号: {email} | 签到受阻: {fail_desc} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"❌ {summary}")
         return summary, False
 
@@ -200,9 +204,9 @@ def write_github_summary(results: list, has_failure: bool):
         if has_failure:
             lines.extend([
                 "> [!WARNING]",
-                "> **排查指引**：",
-                "> 1. **主要原因**：若提示「Cookie 已失效/没有权限」，说明 GitHub Secrets 中的 `GLADOS_COOKIE` 依然是旧凭据或提取格式不完整。请在浏览器登录 GLaDOS 后按 F12 刷新，复制完整 `cookie:` 请求头更新到 GitHub Secrets `GLADOS_COOKIE`。",
-                "> 2. **格式提醒**：若配置了 `GLADOS_USER_AGENT`，不要带从开发者控制台复制出来的首尾单引号 `'`（最新脚本已自动容错剥除）。",
+                "> **排查指引与平台风控现状**：",
+                "> 1. **Cloudflare 人机验证拦截 (code: 5)**：GLaDOS 官方已全面升级风控，对每日首次签到强制要求 Cloudflare Turnstile 浏览器人机验证。GitHub Actions 云端环境缺少真实图形浏览器环境，无法计算验证令牌，需在网页端点击一次打卡。",
+                "> 2. **会话凭据有效性**：若状态查询能正常显示邮箱与天数，说明 Cookie 本身未过期，纯粹是首次打卡受阻于 Cloudflare 验证。",
             ])
         with open(summary_file, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

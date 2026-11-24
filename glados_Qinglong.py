@@ -158,7 +158,11 @@ def checkin_account(cookie: str, sckey: str = ""):
         print(f"✅ {summary}")
         return summary, True
     else:
-        summary = f"账号: {email} | 签到失败: {mess} (code: {code}) | 剩余天数: {left_days} 天"
+        if code == 5 or 'cloudflare' in str(mess).lower():
+            fail_desc = "GLaDOS 启用了 Cloudflare 人机验证 (Turnstile)，云端脚本被拦截，需网页端点击签到"
+        else:
+            fail_desc = mess
+        summary = f"账号: {email} | 签到受阻: {fail_desc} (code: {code}) | 剩余天数: {left_days} 天"
         print(f"❌ {summary}")
         return summary, False
 
